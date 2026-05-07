@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+
+# Checkpoint Spark
+checkpoint/
+
+# Ivy / Spark JARs cache
+.ivy2/
+
+# Docker volumes
+data/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
