@@ -1,5 +1,4 @@
 services:
-
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     container_name: zookeeper
@@ -39,3 +38,25 @@ services:
     environment:
       MONGO_INITDB_DATABASE: fraud_observatory
     mem_limit: 256m
+
+  api:
+    image: python:3.11-slim
+    container_name: fraud-api
+    working_dir: /app
+    volumes:
+      - ../src/api:/app
+      - ../src/detection:/app/detection
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URL=mongodb://mongodb:27017
+      - REDIS_URL=redis://redis:6379
+    command: >
+      bash -c "pip install fastapi uvicorn pymongo redis pydantic python-multipart --quiet &&
+               uvicorn main:app --host 0.0.0.0 --port 8000"
+    depends_on:
+      - mongodb
+      - redis
+    mem_limit: 256m
+
+  
