@@ -1,4 +1,4 @@
-"""
+﻿"""
 FRAUD OBSERVATORY SOC v6.0
 FIXES COMPLETS:
 1. Refresh silencieux via fragment - navigation instantanée
