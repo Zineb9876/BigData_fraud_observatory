@@ -42,8 +42,8 @@ def detect_fraud_rules(transaction):
     signals = []
 
     # Signal 1 : montant trÃ¨s Ã©levÃ©
-    if transaction.get('amount', 0) > 5000:
-        signals.append("Montant suspect (>5000 MAD)")
+    if transaction.get('amount', 0) > 15000:
+        signals.append("Montant suspect")
 
     # Signal 2 : ville Ã©trangÃ¨re
     if transaction.get('city') in FOREIGN_CITIES:
@@ -132,7 +132,7 @@ def save_to_mongodb(transaction, is_fraud, reasons, ml_score=None):
         "timestamp":      transaction.get('timestamp'),
         "device":         transaction.get('device', ''),
         "is_fraud":       1 if is_fraud else 0,
-        "fraud_reason":   ", ".join(reasons) if reasons else "",
+        "fraud_reason": reasons[0] if reasons else "",
         "ml_score":       ml_score
     }
     transactions_collection.insert_one(doc)
@@ -186,3 +186,5 @@ def start_detector():
 
 if __name__ == "__main__":
     start_detector()
+
+

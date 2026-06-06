@@ -1,0 +1,8 @@
+﻿[ui]
+hideSidebarNav = true
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

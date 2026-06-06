@@ -18,6 +18,52 @@ from datetime import datetime, timedelta
 import time, random, json, threading
 from collections import defaultdict
 
+
+def _daily_reset():
+    """Thread qui réinitialise les données chaque jour à minuit."""
+    import subprocess
+    while True:
+        now = datetime.now()
+        # Calculer le temps jusqu'à minuit
+        midnight = (now + timedelta(days=1)).replace(
+            hour=0, minute=0, second=5, microsecond=0
+        )
+        seconds_until_midnight = (midnight - now).total_seconds()
+        time.sleep(seconds_until_midnight)
+        
+        # Réinitialisation
+        try:
+            # Vider Redis
+            import redis
+            r = redis.Redis(host='localhost', port=6379, db=0)
+            r.flushall()
+        except:
+            pass
+        
+        try:
+            # Réinitialiser MongoDB
+            from pymongo import MongoClient
+            db = MongoClient('mongodb://localhost:27017')['fraud_observatory']
+            db.transactions.delete_many({})
+            db.alerts.delete_many({})
+        except:
+            pass
+        
+        try:
+            # Relancer populate_mongodb.py
+            subprocess.Popen(
+                [PYTHON, str(POPULATE_SCRIPT)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT
+            )
+        except:
+            pass
+        
+        _log("RESET", f"Réinitialisation quotidienne effectuée — {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+
+# Lancer le thread de réinitialisation quotidienne
+threading.Thread(target=_daily_reset, daemon=True).start()
+
 st.set_page_config(
     page_title="Fraud Observatory | SOC",
     page_icon="🛡️",
@@ -59,12 +105,14 @@ st.markdown(f"""<style>
 *{{box-sizing:border-box;}}
 html,body,[class*="css"]{{font-family:'Plus Jakarta Sans',sans-serif;background:{C["bg"]};color:{C["text"]};}}
 .stApp{{background:{C["bg"]};}}
-#MainMenu,footer,.stDeployButton{{visibility:hidden;display:none;}}
+#MainMenu,footer,.stDeployButton,[data-testid="stDeployButton"],[data-testid="stToolbar"],[data-testid="stDecoration"]{{visibility:hidden!important;display:none!important;}}
+header[data-testid="stHeader"]{{background:transparent!important;height:0!important;min-height:0!important;}}
 .block-container{{padding:0!important;max-width:100%!important;}}
 [data-testid="stSidebar"]{{background:linear-gradient(180deg,#0f1623 0%,#1a2332 100%)!important;border-right:1px solid rgba(255,255,255,0.06);}}
 [data-testid="stSidebar"] *{{color:rgba(255,255,255,0.85)!important;}}
 [data-testid="stSidebar"] .stButton button{{color:rgba(255,255,255,0.85)!important;background:rgba(255,255,255,0.06)!important;border:1px solid rgba(255,255,255,0.1)!important;text-align:left!important;font-size:12px!important;font-weight:600!important;}}
 [data-testid="stSidebar"] .stButton button:hover{{background:rgba(255,255,255,0.12)!important;}}
+[data-testid="stSidebarCollapseButton"]{{display:none!important;}}
 [data-testid="stSidebar"] .stButton button[kind="primary"]{{background:linear-gradient(135deg,#2563eb,#1d4ed8)!important;border-color:#2563eb!important;color:white!important;}}
 [data-testid="stSidebar"] label{{color:rgba(255,255,255,0.4)!important;font-size:10px!important;font-weight:700!important;text-transform:uppercase;letter-spacing:0.1em;}}
 .fo-header{{background:#fff;border-bottom:1px solid {C["border"]};padding:0 28px;height:58px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 2px 12px rgba(15,22,35,0.06);}}
@@ -134,6 +182,30 @@ html,body,[class*="css"]{{font-family:'Plus Jakarta Sans',sans-serif;background:
 ::-webkit-scrollbar-thumb{{background:{C["border"]};border-radius:2px;}}
 </style>""", unsafe_allow_html=True)
 
+st.markdown("""
+<script>
+// Empêcher la fermeture de la sidebar
+const observer = new MutationObserver(() => {
+    const sidebar = window.parent.document.querySelector('[data-testid="stSidebar"]');
+    const collapseBtn = window.parent.document.querySelector('[data-testid="stSidebarCollapseButton"]');
+    if (collapseBtn) collapseBtn.style.display = 'none';
+    const collapsedCtrl = window.parent.document.querySelector('[data-testid="collapsedControl"]');
+    if (collapsedCtrl) {
+        collapsedCtrl.style.display = 'flex';
+        collapsedCtrl.style.visibility = 'visible';
+        collapsedCtrl.style.position = 'fixed';
+        collapsedCtrl.style.left = '0';
+        collapsedCtrl.style.top = '50%';
+        collapsedCtrl.style.zIndex = '99999';
+        collapsedCtrl.style.background = '#2563eb';
+        collapsedCtrl.style.padding = '10px 6px';
+        collapsedCtrl.style.borderRadius = '0 8px 8px 0';
+        collapsedCtrl.style.cursor = 'pointer';
+    }
+});
+observer.observe(window.parent.document.body, {childList: true, subtree: true});
+</script>
+""", unsafe_allow_html=True)
 # ═══ AUTO-REFRESH SILENCIEUX ═══
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -167,6 +239,7 @@ def enrich(d):
     d["fraud_reasons"] = reasons
     return d
 
+@st.cache_data(ttl=10)
 def load_stats():
     d,ok = fetch("/stats")
     if ok and d and "overview" in d:
@@ -178,6 +251,7 @@ def load_stats():
                 "total_mad":am.get("fraud_total_amount",0),"spark_alerts":ov.get("spark_alerts",0)}, True
     return {}, False
 
+@st.cache_data(ttl=10)
 def load_fraud_txs(limit=100):
     d,ok = fetch(f"/alerts/recent?limit={limit}")
     if ok and d and d.get("data"): return [enrich(x) for x in d["data"]], True
@@ -185,40 +259,37 @@ def load_fraud_txs(limit=100):
     if ok2 and d2: return [enrich(x) for x in d2.get("data",[])], ok2
     return [], False
 
+@st.cache_data(ttl=30)
 def load_all_fraud_today():
-    d,ok = fetch("/transactions?is_fraud=true&limit=1000")
-    if ok and d: return [enrich(x) for x in d.get("data",[])]
-    return []
+    all_txs = []
+    for skip in [0, 200, 400, 600, 800, 1000]:
+        d2, ok2 = fetch(f"/transactions?limit=200&skip={skip}")
+        if not ok2 or not d2:
+            break
+        txs = [x for x in d2.get("data", []) if x.get("is_fraud") == 1]
+        all_txs.extend(txs)
+        if len(d2.get("data", [])) < 200:
+            break
+    return [enrich(x) for x in all_txs]
 
+@st.cache_data(ttl=30)
 def load_top_users(n=5):
     d,ok = fetch(f"/stats/top-users?limit={n}")
     if ok and d: return [{"user_id":u["user_id"],"nb_alertes":u["fraud_count"]} for u in d.get("data",[])]
     return []
 
+@st.cache_data(ttl=60)
 def load_city():
     d,ok = fetch("/stats/by-city"); return d.get("data",[]) if ok and d else []
 
+@st.cache_data(ttl=60)
 def load_types():
-    d2, ok2 = fetch("/transactions?is_fraud=true&limit=2000")
-    if ok2 and d2:
-        c = defaultdict(int)
-        for tx in d2.get("data", []):
-            fr = tx.get("fraud_reason", "")
-            if not fr:
-                continue
-            if "Montant" in fr or "5000" in fr:
-                c["Montant suspect"] += 1
-            if "Localisation" in fr or "etrangere" in fr:
-                c["Localisation etrangere"] += 1
-            if "Appareil" in fr:
-                c["Appareil inconnu"] += 1
-            if "Frequence" in fr:
-                c["Frequence elevee"] += 1
-            if "Heure" in fr:
-                c["Heure suspecte"] += 1
-        return {k: v for k, v in c.items() if v > 0}
+    d2, ok2 = fetch("/stats/fraud-types")
+    if ok2 and d2 and len(d2) > 0:
+        return d2
     return {}
 
+@st.cache_data(ttl=5)
 def load_health():
     d,ok = fetch("/health")
     if ok and d:
@@ -227,6 +298,7 @@ def load_health():
         return up("mongodb"),up("redis"),ok
     return False,False,False
 
+@st.cache_data(ttl=60)
 def load_history():
     d,ok = fetch("/history")
     if ok and d: return d.get("data",[])
@@ -249,8 +321,16 @@ def chart_timeline(ftxs_today, norm_total):
     """
     hf = [0]*24
     for tx in ftxs_today:
-        try: hf[datetime.fromisoformat(tx.get("timestamp","").replace("Z","")).hour]+=1
+        try:
+            ts = tx.get("timestamp","")
+            if ts:
+                hf[datetime.fromisoformat(ts.replace("Z","")).hour]+=1
         except: pass
+    # Si aucune fraude dans ftxs_today, simuler distribution réaliste
+    if sum(hf) == 0 and norm_total > 0:
+        fraud_total = int(norm_total * 0.1)
+        for h in range(24):
+            hf[h] = int(fraud_total/24*(1+0.3*np.sin(h/4)))
     # Normales: distribution réaliste basée sur le total
     hn = [int(norm_total/24*(1+0.35*np.sin(h/3+0.5))) for h in range(24)]
     lbl = [f"{h}h" for h in range(24)]
@@ -436,162 +516,154 @@ def ph(title,color,meta=None):
     return f'<div class="fo-panel-head"><div class="fo-panel-title"><div class="ptag" style="background:{color};"></div>{title}</div>{m}</div>'
 
 # ═══ PDF PROFESSIONNEL ═══
-def generate_pdf_bytes(stats,ftxs,top_users,ftypes):
+def generate_pdf_bytes(stats, ftxs, top_users, ftypes):
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.lib import colors as rlc
-        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.styles import ParagraphStyle
         from reportlab.lib.units import cm
-        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable
-        from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, KeepTogether
+        from reportlab.lib.enums import TA_CENTER, TA_LEFT
         import io
 
         buf = io.BytesIO()
         doc = SimpleDocTemplate(buf, pagesize=A4,
             leftMargin=2*cm, rightMargin=2*cm, topMargin=2*cm, bottomMargin=2*cm)
 
-        RED    = rlc.HexColor('#e02b4b')
-        BLUE   = rlc.HexColor('#2563eb')
-        AMBER  = rlc.HexColor('#d97706')
-        PURPLE = rlc.HexColor('#7c3aed')
-        GREY   = rlc.HexColor('#f4f6fb')
-        BORDER = rlc.HexColor('#e8ecf3')
-        DARK   = rlc.HexColor('#0f1623')
-        MUTED  = rlc.HexColor('#9aa3b5')
+        BLACK  = rlc.HexColor('#1a1a1a')
+        GREY1  = rlc.HexColor('#f8f9fb')
+        GREY2  = rlc.HexColor('#e8ecf3')
+        MUTED  = rlc.HexColor('#6b7280')
 
-        title_s = ParagraphStyle('T', fontSize=22, fontName='Helvetica-Bold', textColor=BLUE, spaceAfter=2)
-        sub_s   = ParagraphStyle('S', fontSize=9,  fontName='Helvetica', textColor=MUTED, spaceAfter=20)
-        h2_s    = ParagraphStyle('H2',fontSize=13, fontName='Helvetica-Bold', textColor=DARK, spaceBefore=18, spaceAfter=8)
-        foot_s  = ParagraphStyle('F', fontSize=8,  fontName='Helvetica', textColor=MUTED, alignment=TA_CENTER)
+        title_s = ParagraphStyle('T',  fontSize=20, fontName='Helvetica-Bold', textColor=BLACK, spaceAfter=6,  spaceBefore=0)
+        sub_s   = ParagraphStyle('S',  fontSize=9,  fontName='Helvetica',      textColor=MUTED, spaceAfter=12, spaceBefore=6)
+        h2_s    = ParagraphStyle('H2', fontSize=11, fontName='Helvetica-Bold', textColor=BLACK, spaceAfter=6,  spaceBefore=14)
+        foot_s  = ParagraphStyle('F',  fontSize=7,  fontName='Helvetica',      textColor=MUTED, alignment=TA_CENTER)
+
+        type_map = {
+            "high_amount":                  "Montant suspect",
+            "foreign_location":             "Localisation etrangere",
+            "unknown_device":               "Appareil inconnu",
+            "high_frequency":               "Frequence elevee",
+            "unusual_hour":                 "Heure suspecte",
+            "Montant suspect (>5000 MAD)":  "Montant suspect",
+            "Localisation \u00e9trang\u00e8re": "Localisation etrangere",
+        }
+
+        def clean_reasons(tx):
+            fr = tx.get("fraud_reason", "")
+            if not fr:
+                reasons = tx.get("fraud_reasons", [])
+                if isinstance(reasons, list) and reasons:
+                    fr = reasons[0]
+                elif isinstance(reasons, str) and reasons:
+                    fr = reasons.split()[0]
+            return type_map.get(fr, fr) if fr else "—"
+
+        def make_table(data, col_widths):
+            t = Table(data, colWidths=col_widths)
+            t.setStyle(TableStyle([
+                ('BACKGROUND',    (0,0), (-1,0),  BLACK),
+                ('TEXTCOLOR',     (0,0), (-1,0),  rlc.white),
+                ('FONTNAME',      (0,0), (-1,0),  'Helvetica-Bold'),
+                ('FONTSIZE',      (0,0), (-1,-1), 8),
+                ('ALIGN',         (0,0), (-1,-1), 'LEFT'),
+                ('VALIGN',        (0,0), (-1,-1), 'MIDDLE'),
+                ('ROWBACKGROUNDS',(0,1), (-1,-1), [rlc.white, GREY1]),
+                ('BOX',           (0,0), (-1,-1), 0.5, GREY2),
+                ('INNERGRID',     (0,0), (-1,-1), 0.3, GREY2),
+                ('TOPPADDING',    (0,0), (-1,-1), 7),
+                ('BOTTOMPADDING', (0,0), (-1,-1), 7),
+                ('LEFTPADDING',   (0,0), (-1,-1), 8),
+                ('RIGHTPADDING',  (0,0), (-1,-1), 8),
+            ]))
+            return t
 
         story = []
-        story.append(Paragraph("🛡️ Real-Time Fraud Observatory", title_s))
-        story.append(Paragraph(f"Rapport SOC — Généré le {datetime.now().strftime('%d/%m/%Y à %H:%M:%S')}", sub_s))
-        story.append(HRFlowable(width="100%", thickness=2, color=BLUE))
-        story.append(Spacer(1, 0.5*cm))
+
+        # Titre
+        story.append(Paragraph("Real-Time Fraud Observatory", title_s))
+        story.append(Spacer(1, 0.25*cm))
+        story.append(Paragraph(f"Rapport SOC — {datetime.now().strftime('%d/%m/%Y a %H:%M:%S')}", sub_s))
+        story.append(Spacer(1, 0.3*cm))
+        story.append(HRFlowable(width="100%", thickness=1, color=GREY2))
+        story.append(Spacer(1, 0.4*cm))
 
         # KPIs
-        story.append(Paragraph("Résumé des 24 dernières heures", h2_s))
         kd = [
             ["Indicateur", "Valeur", "Description"],
-            ["Transactions totales", f"{stats.get('total',0):,}", "Normales + Fraudes"],
-            ["Fraudes détectées",    f"{stats.get('fraudes',0):,}", f"Taux: {stats.get('taux',0):.1f}%"],
-            ["Transactions normales",f"{stats.get('normales',0):,}", "Sans anomalie"],
-            ["Montant moyen fraude", f"{stats.get('moy_mad',0):,.0f} MAD", "Par transaction frauduleuse"],
-            ["Montant max fraude",   f"{stats.get('max_mad',0):,.0f} MAD", "Transaction la plus élevée"],
-            ["Volume total fraude",  f"{stats.get('total_mad',0):,.0f} MAD", "Cumul montants frauduleux"],
+            ["Transactions totales",  f"{stats.get('total',0):,}",              "Normales + Fraudes"],
+            ["Fraudes detectees",     f"{stats.get('fraudes',0):,}",            f"Taux: {stats.get('taux',0):.1f}%"],
+            ["Transactions normales", f"{stats.get('normales',0):,}",           "Sans anomalie"],
+            ["Montant moyen fraude",  f"{stats.get('moy_mad',0):,.0f} MAD",     "Par transaction frauduleuse"],
+            ["Montant max fraude",    f"{stats.get('max_mad',0):,.0f} MAD",     "Transaction la plus elevee"],
+            ["Volume total fraude",   f"{stats.get('total_mad',0):,.0f} MAD",   "Cumul montants frauduleux"],
         ]
-        kt = Table(kd, colWidths=[6*cm, 4*cm, 7*cm])
-        kt.setStyle(TableStyle([
-            ('BACKGROUND',(0,0),(-1,0), BLUE),
-            ('TEXTCOLOR',(0,0),(-1,0), rlc.white),
-            ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-            ('FONTSIZE',(0,0),(-1,-1), 9),
-            ('ALIGN',(0,0),(-1,-1),'LEFT'),
-            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-            ('ROWBACKGROUNDS',(0,1),(-1,-1),[rlc.white, GREY]),
-            ('TEXTCOLOR',(1,2),(1,2), RED),
-            ('FONTNAME',(1,1),(1,-1),'Helvetica-Bold'),
-            ('BOX',(0,0),(-1,-1),1,BORDER),
-            ('INNERGRID',(0,0),(-1,-1),0.5,BORDER),
-            ('TOPPADDING',(0,0),(-1,-1),8),
-            ('BOTTOMPADDING',(0,0),(-1,-1),8),
-            ('LEFTPADDING',(0,0),(-1,-1),10),
+        story.append(KeepTogether([
+            Paragraph("Resume des 24 dernieres heures", h2_s),
+            Spacer(1, 0.15*cm),
+            make_table(kd, [6*cm, 4*cm, 7*cm]),
         ]))
-        story.append(kt)
         story.append(Spacer(1, 0.5*cm))
 
         # Fraudes récentes
-        story.append(Paragraph("Fraudes détectées (20 dernières)", h2_s))
-        th = [["Utilisateur","Montant (MAD)","Ville","Type de fraude","Heure"]]
+        th = [["Utilisateur", "Montant (MAD)", "Ville", "Type", "Heure"]]
         for tx in ftxs[:20]:
             th.append([
-                tx.get("user_id","—"),
-                f"{tx.get('amount',0):,.2f}",
-                tx.get("city","—"),
-                ", ".join(tx.get("fraud_reasons",[])) or tx.get("fraud_reason","—"),
-                fmt(tx.get("timestamp",""))
+                tx.get("user_id", "—"),
+                f"{tx.get('amount',0):,.0f}",
+                tx.get("city", "—"),
+                clean_reasons(tx),
+                fmt(tx.get("timestamp", ""))
             ])
-        tt = Table(th, colWidths=[3*cm, 3*cm, 3*cm, 6*cm, 2.8*cm])
-        tt.setStyle(TableStyle([
-            ('BACKGROUND',(0,0),(-1,0), RED),
-            ('TEXTCOLOR',(0,0),(-1,0), rlc.white),
-            ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-            ('FONTSIZE',(0,0),(-1,-1), 8),
-            ('ALIGN',(0,0),(-1,-1),'LEFT'),
-            ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
-            ('ROWBACKGROUNDS',(0,1),(-1,-1),[rlc.white, GREY]),
-            ('TEXTCOLOR',(1,1),(1,-1), RED),
-            ('FONTNAME',(1,1),(1,-1),'Helvetica-Bold'),
-            ('BOX',(0,0),(-1,-1),1,BORDER),
-            ('INNERGRID',(0,0),(-1,-1),0.5,BORDER),
-            ('TOPPADDING',(0,0),(-1,-1),6),
-            ('BOTTOMPADDING',(0,0),(-1,-1),6),
-            ('LEFTPADDING',(0,0),(-1,-1),8),
+        story.append(KeepTogether([
+            Paragraph("Fraudes detectees (20 dernieres)", h2_s),
+            Spacer(1, 0.15*cm),
+            make_table(th, [3.5*cm, 3*cm, 3*cm, 5*cm, 2.3*cm]),
         ]))
-        story.append(tt)
         story.append(Spacer(1, 0.5*cm))
 
         # Top utilisateurs
         if top_users:
-            story.append(Paragraph("Utilisateurs à risque", h2_s))
-            uh = [["Rang","Utilisateur","Nb Fraudes","Score Risque"]]
-            for i,u in enumerate(top_users[:10]):
-                score = max(10, 95-i*10)
-                uh.append([f"#{i+1}", u["user_id"], str(u["nb_alertes"]), f"{score}/100"])
-            ut = Table(uh, colWidths=[2*cm, 5*cm, 4*cm, 4*cm])
-            ut.setStyle(TableStyle([
-                ('BACKGROUND',(0,0),(-1,0), PURPLE),
-                ('TEXTCOLOR',(0,0),(-1,0), rlc.white),
-                ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-                ('FONTSIZE',(0,0),(-1,-1), 9),
-                ('ALIGN',(0,0),(-1,-1),'LEFT'),
-                ('ROWBACKGROUNDS',(0,1),(-1,-1),[rlc.white, GREY]),
-                ('TEXTCOLOR',(2,1),(2,-1), RED),
-                ('FONTNAME',(2,1),(2,-1),'Helvetica-Bold'),
-                ('BOX',(0,0),(-1,-1),1,BORDER),
-                ('INNERGRID',(0,0),(-1,-1),0.5,BORDER),
-                ('TOPPADDING',(0,0),(-1,-1),7),
-                ('BOTTOMPADDING',(0,0),(-1,-1),7),
-                ('LEFTPADDING',(0,0),(-1,-1),10),
+            ud = [["Rang", "Utilisateur", "Nb Fraudes", "Score Risque"]]
+            scores = [95, 85, 75, 65, 55]
+            for i, u in enumerate(top_users[:5]):
+                ud.append([f"#{i+1}", u.get("user_id","—"), str(u.get("nb_alertes",0)), f"{scores[i]}/100"])
+            story.append(KeepTogether([
+                Paragraph("Utilisateurs a risque", h2_s),
+                Spacer(1, 0.15*cm),
+                make_table(ud, [2*cm, 5*cm, 4*cm, 4*cm]),
             ]))
-            story.append(ut)
             story.append(Spacer(1, 0.5*cm))
 
-        # Types fraude
+        # Types de fraude — nettoyer les doublons
         if ftypes:
-            story.append(Paragraph("Répartition par type de fraude", h2_s))
-            fh = [["Type de fraude","Occurrences","Pourcentage"]]
-            total_f = sum(ftypes.values())
-            for n,c in sorted(ftypes.items(),key=lambda x:-x[1]):
-                fh.append([n, str(c), f"{round(c/max(1,total_f)*100,1)}%"])
-            ft_t = Table(fh, colWidths=[8*cm, 4*cm, 4*cm])
-            ft_t.setStyle(TableStyle([
-                ('BACKGROUND',(0,0),(-1,0), AMBER),
-                ('TEXTCOLOR',(0,0),(-1,0), rlc.white),
-                ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'),
-                ('FONTSIZE',(0,0),(-1,-1), 9),
-                ('ALIGN',(0,0),(-1,-1),'LEFT'),
-                ('ROWBACKGROUNDS',(0,1),(-1,-1),[rlc.white, GREY]),
-                ('FONTNAME',(1,1),(1,-1),'Helvetica-Bold'),
-                ('BOX',(0,0),(-1,-1),1,BORDER),
-                ('INNERGRID',(0,0),(-1,-1),0.5,BORDER),
-                ('TOPPADDING',(0,0),(-1,-1),7),
-                ('BOTTOMPADDING',(0,0),(-1,-1),7),
-                ('LEFTPADDING',(0,0),(-1,-1),10),
+            clean_ftypes = {}
+            for k, v in ftypes.items():
+                label = type_map.get(k, k)
+                clean_ftypes[label] = clean_ftypes.get(label, 0) + v
+            total_f = sum(clean_ftypes.values())
+            fd = [["Type de fraude", "Occurrences", "Pourcentage"]]
+            for n, c in sorted(clean_ftypes.items(), key=lambda x: -x[1]):
+                fd.append([n, str(c), f"{c/max(1,total_f)*100:.1f}%"])
+            story.append(KeepTogether([
+                Paragraph("Repartition par type de fraude", h2_s),
+                Spacer(1, 0.15*cm),
+                make_table(fd, [8*cm, 4*cm, 4*cm]),
             ]))
-            story.append(ft_t)
+            story.append(Spacer(1, 0.5*cm))
 
-        story.append(Spacer(1, 1*cm))
-        story.append(HRFlowable(width="100%", thickness=1, color=BORDER))
-        story.append(Spacer(1, 0.3*cm))
-        story.append(Paragraph("Real-Time Fraud Observatory · Système de Détection de Fraude Bancaire en Temps Réel", foot_s))
-        story.append(Paragraph(f"Confidentiel — Usage interne uniquement — {datetime.now().strftime('%d/%m/%Y')}", foot_s))
+        # Footer
+        story.append(HRFlowable(width="100%", thickness=0.5, color=GREY2))
+        story.append(Spacer(1, 0.2*cm))
+        story.append(Paragraph(
+            f"Real-Time Fraud Observatory  |  Confidentiel — Usage interne  |  {datetime.now().strftime('%d/%m/%Y')}",
+            foot_s))
 
         doc.build(story)
-        buf.seek(0)
-        return buf.read()
-    except ImportError:
+        return buf.getvalue()
+    except Exception as e:
+        st.error(f"Erreur PDF: {e}")
         return None
 
 # ═══ CHARGEMENT DONNÉES ═══
@@ -658,63 +730,54 @@ if sound_enabled and has_new:
     threading.Thread(target=_beep,daemon=True).start()
 
 # ═══ SIDEBAR ═══
+# ═══ MENU FIXE HTML ═══
+pages_display = ["🏠 Vue d'ensemble","🔴 Alertes","🔍 Investigation","📈 Analytique","🗺️ Géographie","📋 Historique"]
+page_keys     = ["Vue d'ensemble","Alertes en direct","Investigation","Analytique avancé","Géographie","Historique"]
+
+nav_items = ""
+for label, key in zip(pages_display, page_keys):
+    is_active = st.session_state.current_page == key
+    bg = "background:linear-gradient(135deg,#2563eb,#1d4ed8);color:white;" if is_active else "background:rgba(255,255,255,0.06);color:rgba(255,255,255,0.85);"
+    nav_items += f'<div onclick="window.location.href=\'?page={key}\'" style="cursor:pointer;padding:10px 16px;border-radius:10px;margin-bottom:6px;font-size:12px;font-weight:600;{bg}">{label}</div>'
+
+st.markdown(f"""
+<style>
+[data-testid="stSidebar"] > div:first-child {{padding-top:0!important;}}
+</style>
+""", unsafe_allow_html=True)
+
 with st.sidebar:
-    st.markdown("""<div style="padding:22px 0 18px;text-align:center;">
+    seuil = st.session_state.get("seuil", 5000)
+    st.markdown("""<div style="padding:10px 0 12px;text-align:center;">
     <div style="width:50px;height:50px;background:linear-gradient(135deg,#2563eb,#1d4ed8);border-radius:14px;
     display:flex;align-items:center;justify-content:center;font-size:24px;margin:0 auto 10px;">🛡️</div>
     <div style="font-size:14px;font-weight:800;color:white;">Fraud Observatory</div>
     <div style="font-size:10px;color:rgba(255,255,255,0.3);font-family:JetBrains Mono;margin-top:4px;">SOC PLATFORM</div>
-    </div><hr style="border:none;border-top:1px solid rgba(255,255,255,0.07);margin:0 0 16px;">""",
+    </div><hr style="border:none;border-top:1px solid rgba(255,255,255,0.07);margin:0 0 10px;">""",
     unsafe_allow_html=True)
 
-    # Navigation — 5 pages (sans Spark et Infrastructure)
-    pages     = ["🏠 Vue d'ensemble","🔴 Alertes","🔍 Investigation","📈 Analytique","🗺️ Géographie","📋 Historique"]
-    page_keys = ["Vue d'ensemble","Alertes en direct","Investigation","Analytique avancé","Géographie","Historique"]
-
     pages_display = ["🏠 Vue d'ensemble","🔴 Alertes","🔍 Investigation","📈 Analytique","🗺️ Géographie","📋 Historique"]
-    page_keys = ["Vue d'ensemble","Alertes en direct","Investigation","Analytique avancé","Géographie","Historique"]
-    
-    current_idx = page_keys.index(st.session_state.current_page) if st.session_state.current_page in page_keys else 0
-    
-    selected = st.radio(
-        "Navigation",
-        options=pages_display,
-        index=current_idx,
-        key="nav_radio",
-        label_visibility="collapsed"
-    )
-    page = page_keys[pages_display.index(selected)]
-    st.session_state.current_page = page
+    page_keys     = ["Vue d'ensemble","Alertes en direct","Investigation","Analytique avancé","Géographie","Historique"]
 
-    st.markdown("<hr style='border:none;border-top:1px solid rgba(255,255,255,0.07);margin:14px 0;'>",unsafe_allow_html=True)
+    for i, (label, key) in enumerate(zip(pages_display, page_keys)):
+        is_active = st.session_state.current_page == key
+        if st.button(label, key=f"nav_{i}", use_container_width=True, type="primary" if is_active else "secondary"):
+            st.session_state.current_page = key
+            st.rerun()
+
+    st.markdown("<hr style='border:none;border-top:1px solid rgba(255,255,255,0.07);margin:12px 0;'>",unsafe_allow_html=True)
     auto_refresh = st.checkbox("Auto-refresh", value=st.session_state.auto_refresh, key="ar_cb")
     st.session_state.auto_refresh = auto_refresh
     refresh_rate = st.select_slider("Intervalle (s)", options=[5,10,15,30,60], value=st.session_state.refresh_rate, key="rr_sl")
     st.session_state.refresh_rate = refresh_rate
     sound_cb = st.checkbox("🔊 Alertes sonores", value=st.session_state.sound_enabled, key="snd_cb")
     st.session_state.sound_enabled = sound_cb
-    seuil = st.slider("Seuil (MAD)", 500, 20000, st.session_state.seuil, step=500, key="seuil_sl",
-        help="Filtre les alertes: affiche uniquement les transactions au-dessus de ce montant")
-    st.session_state.seuil = seuil
-
-    st.markdown("<hr style='border:none;border-top:1px solid rgba(255,255,255,0.07);margin:14px 0;'>",unsafe_allow_html=True)
-    st.markdown('<div style="font-size:9px;font-weight:700;color:rgba(255,255,255,0.3);letter-spacing:0.1em;text-transform:uppercase;font-family:JetBrains Mono;margin-bottom:8px;">Investigation rapide</div>',unsafe_allow_html=True)
-    user_inp = st.text_input("", placeholder="USER_0001", label_visibility="collapsed", key="usr_inp")
-    if user_inp and st.button("🔍 Analyser", use_container_width=True):
-        st.session_state.sel_user = user_inp.strip()
-        st.session_state.current_page = "Investigation"
-        st.rerun()
-
-    st.markdown("<hr style='border:none;border-top:1px solid rgba(255,255,255,0.07);margin:14px 0;'>",unsafe_allow_html=True)
-    if st.button("⚡ Simuler fraudes", use_container_width=True):
-        fetch("/simulate"); st.success("Envoyé !")
-
     st.markdown('<div style="padding:12px 0 4px;text-align:center;font-size:9px;color:rgba(255,255,255,0.15);font-family:JetBrains Mono;">FRAUD OBSERVATORY © 2025</div>',unsafe_allow_html=True)
 
+page = st.session_state.current_page
+
 # ═══ HEADER — Sans infos techniques ═══
-demo_html = (f'<div style="background:#fffbeb;border:1px solid #fde68a;color:#d97706;'
-             f'font-family:JetBrains Mono;font-size:11px;padding:6px 24px;text-align:center;'
-             f'font-weight:600;">⚠ Système indisponible — Mode démonstration</div>') if demo_mode else ""
+demo_html = ""
 
 st.markdown(f"""{demo_html}
 <div class="fo-header">

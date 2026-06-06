@@ -26,7 +26,7 @@ def generate(n=1000, fraud_rate=0.10):
         user_id = random.choice(users)
         if random.random() < fraud_rate:
             fraud_type = random.choice(["high_amount", "foreign_location", "unusual_hour"])
-            hour = random.randint(1, 4) if fraud_type == "unusual_hour" else datetime.now().hour
+            hour = random.randint(1, 4) if fraud_type == "unusual_hour" else random.randint(0, 23)
             city = random.choice(FOREIGN_CITIES) if fraud_type == "foreign_location" else random.choice(NORMAL_CITIES)
             amount = random.uniform(5000, 20000) if fraud_type == "high_amount" else random.uniform(200, 3000)
             docs.append({
@@ -50,7 +50,7 @@ def generate(n=1000, fraud_rate=0.10):
                 "currency": "MAD",
                 "merchant": random.choice(MERCHANTS),
                 "city": random.choice(NORMAL_CITIES),
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now().replace(hour=random.randint(0,23), minute=random.randint(0,59)).isoformat(),
                 "device": random.choice(DEVICES),
                 "is_fraud": 0,
                 "fraud_reason": "",

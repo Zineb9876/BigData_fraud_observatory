@@ -1,4 +1,4 @@
-"""
+﻿"""
 Real-Time Fraud Observatory — API REST v4
 LOGIQUE FINALE CORRECTE:
   - total_transactions = col_tx (normales + fraudes) sur 24h
@@ -318,6 +318,29 @@ def stats_timeline(days: int = Query(1,ge=1,le=90)):
          "amount":round(r["amount"],2)}
         for r in res
     ]}
+@app.get("/stats/fraud-types")
+def stats_fraud_types():
+    pipe = [
+        {"$match": {"is_fraud": 1}},
+        {"$group": {"_id": "$fraud_reason", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}}
+    ]
+    res = list(col_tx.aggregate(pipe))
+    mapping = {
+        "high_amount": "Montant suspect",
+        "foreign_location": "Localisation etrangere",
+        "unknown_device": "Appareil inconnu",
+        "high_frequency": "Frequence elevee",
+        "unusual_hour": "Heure suspecte",
+    }
+    result = {}
+    for r in res:
+        key = r["_id"] or ""
+        if not key:
+            continue
+        label = mapping.get(key, key)
+        result[label] = r["count"]
+    return result
 
 @app.get("/users/{user_id}/risk")
 def user_risk(user_id: str):

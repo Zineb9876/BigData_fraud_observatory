@@ -24,12 +24,27 @@ def make_transaction():
     ftype     = None
 
     if is_fraud:
-        ftype  = random.choice(["high_amount","foreign_city","rapid_succession","unusual_device"])
-        amount = round(random.uniform(5000, 50000), 2)
-        city   = random.choice(FOREIGN_CITIES)
+        ftype = random.choice(["high_amount","foreign_city","rapid_succession","unusual_device"])
+        if ftype == "high_amount":
+            amount = round(random.uniform(6000, 50000), 2)
+            city   = random.choice(NORMAL_CITIES)
+            device = random.choice(DEVICES)
+        elif ftype == "foreign_city":
+            amount = round(random.uniform(200, 4000), 2)
+            city   = random.choice(FOREIGN_CITIES)
+            device = random.choice(DEVICES)
+        elif ftype == "rapid_succession":
+            amount = round(random.uniform(100, 2000), 2)
+            city   = random.choice(NORMAL_CITIES)
+            device = random.choice(DEVICES)
+        else:
+            amount = round(random.uniform(500, 8000), 2)
+            city   = random.choice(NORMAL_CITIES)
+            device = "unknown_device"
     else:
-        amount = round(random.uniform(50, 3000), 2)
+        amount = round(random.uniform(50, 8000), 2)
         city   = random.choice(NORMAL_CITIES)
+        device = random.choice(DEVICES)
 
     tx = {
         "transaction_id": f"TX_{int(time.time()*1000)}_{random.randint(1000,9999)}",
@@ -37,7 +52,7 @@ def make_transaction():
         "amount":         amount,
         "merchant":       random.choice(MERCHANTS),
         "city":           city,
-        "device":         random.choice(DEVICES),
+        "device":         device if is_fraud else random.choice(DEVICES),
         "timestamp":      datetime.now().isoformat(),
         "is_fraud":       is_fraud,
     }
@@ -84,3 +99,7 @@ if __name__ == "__main__":
             print(f"\n  Stats: {tx_count} tx | {fraud_count} fraudes | taux={taux}%\n")
         delay = random.uniform(TX_DELAY_MIN, TX_DELAY_MAX)
         time.sleep(delay)
+
+
+
+
